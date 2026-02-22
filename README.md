@@ -2,7 +2,12 @@
 
 **作者**：ABAP 老白
 
-**原文链接**：https://mp.weixin.qq.com/s/ByNUYR00GWv3XHhaz2JvGg
+![](img\pic1.png)
+
+![](img\pic2.gif)
+
+**更多功能请查看原文链接**：https://mp.weixin.qq.com/s/ByNUYR00GWv3XHhaz2JvGg
+
 
 ## 一、插件背景
 
