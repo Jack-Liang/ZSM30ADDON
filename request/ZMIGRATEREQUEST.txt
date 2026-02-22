@@ -1,0 +1,544 @@
+*&---------------------------------------------------------------------*
+*& Report ZMIGRATEREQUEST
+*&---------------------------------------------------------------------*
+*& 迁移传输请求 Baitianzhen
+*&---------------------------------------------------------------------*
+REPORT zmigraterequest NO STANDARD PAGE HEADING.
+
+TYPE-POOLS: trwbo,stms.
+TABLES: sscrfields,e070.
+DATA: retcode  TYPE c,
+      length   TYPE i,
+      tran_dir TYPE text255,
+      focus    TYPE char30,
+      request  TYPE e070-trkorr,
+      system   TYPE tmscsys-sysnam,
+      file_nam TYPE sdbah-actid,
+      file_ext TYPE sdbad-funct,
+      gt_infos TYPE stms_wbo_requests WITH HEADER LINE.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE t1.
+  PARAMETERS: p_down RADIOBUTTON GROUP typ USER-COMMAND sele DEFAULT 'X'.
+  PARAMETERS: p_upld RADIOBUTTON GROUP typ.
+  PARAMETERS: p_dele RADIOBUTTON GROUP typ.
+  PARAMETERS: p_070l RADIOBUTTON GROUP typ.
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE t2.
+  PARAMETERS: p_file TYPE char255 LOWER CASE MODIF ID a,
+              p_clnt TYPE mandt DEFAULT sy-mandt MATCHCODE OBJECT h_t000 MODIF ID a,
+              p_view AS CHECKBOX DEFAULT 'X' MODIF ID a,
+              p_se03 AS CHECKBOX DEFAULT 'X' MODIF ID a.
+SELECTION-SCREEN END OF BLOCK b2.
+
+SELECTION-SCREEN BEGIN OF BLOCK b3 WITH FRAME TITLE t3.
+  PARAMETERS: p_reqnum TYPE trkorr MODIF ID b,
+              p_memo   TYPE char128 LOWER CASE MODIF ID c,
+              p_folder TYPE char128 DEFAULT 'D:\Requests' LOWER CASE MODIF ID c.
+SELECTION-SCREEN END OF BLOCK b3.
+
+INITIALIZATION.
+  system = sy-sysid.
+  CALL FUNCTION 'RSPO_R_SAPGPARAM'
+    EXPORTING
+      name   = 'DIR_TRANS'
+    IMPORTING
+      value  = tran_dir
+    EXCEPTIONS
+      error  = 1
+      OTHERS = 0.
+  IF tran_dir IS INITIAL.
+    MESSAGE e000(oo) WITH 'DIR_TRANS目录未找到'.
+  ENDIF.
+
+AT SELECTION-SCREEN.
+  IF p_reqnum IS NOT INITIAL AND p_memo IS INITIAL.
+    SELECT SINGLE as4text INTO p_memo
+      FROM e07t
+      WHERE trkorr = p_reqnum AND
+            langu = sy-langu.
+    IF sy-subrc <> 0.
+      SELECT SINGLE as4text INTO p_memo
+        FROM e07t
+        WHERE trkorr = p_reqnum.
+      IF sy-subrc <> 0.
+        MESSAGE s000(oo) WITH '请求号' p_reqnum '未找到'.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+  IF sy-ucomm = 'SELE'.
+    IF p_upld = 'X'.
+      focus = 'P_FILE'.
+    ELSE.
+      focus = 'P_REQNUM'.
+    ENDIF.
+  ELSE.
+    CLEAR focus.
+  ENDIF.
+
+AT SELECTION-SCREEN OUTPUT.
+  t1 = '选择功能'.
+  t2 = '上传参数'.
+  t3 = '请求'.
+  %_p_down_%_app_%-text   = '下载请求到本机'.
+  %_p_memo_%_app_%-text   = '注释'.
+  %_p_upld_%_app_%-text   = '上传请求'.
+  %_p_file_%_app_%-text   = '文件'.
+  %_p_clnt_%_app_%-text   = '上传到Client'.
+  %_p_view_%_app_%-text   = '传输前查看请求内容'.
+  %_p_se03_%_app_%-text   = '传输完毕修改对象的目录对象条目'.
+  %_p_reqnum_%_app_%-text = '请求号'.
+  %_p_folder_%_app_%-text = '下载到文件夹'.
+  %_p_dele_%_app_%-text   = '删除请求物理文件'.
+  %_p_070l_%_app_%-text   = '设置E070L的请求号'.
+  LOOP AT SCREEN.
+    CASE 'X'.
+      WHEN p_down.
+        IF screen-group1 CA 'A'.
+          screen-active = '0'.
+        ENDIF.
+      WHEN p_upld.
+        IF screen-group1 CA 'BC'.
+          screen-active = '0'.
+        ENDIF.
+      WHEN p_dele.
+        IF screen-group1 CA 'AC'.
+          screen-active = '0'.
+        ENDIF.
+      WHEN p_070l.
+        IF screen-group1 CA 'AC'.
+          screen-active = '0'.
+        ENDIF.
+    ENDCASE.
+    MODIFY SCREEN.
+  ENDLOOP.
+  SET CURSOR FIELD focus.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_reqnum.
+  DATA: request_header TYPE trwbo_request_header,
+        is_selection   TYPE trwbo_selection.
+  is_selection-reqstatus = 'R'.
+  CALL FUNCTION 'TR_PRESENT_REQUESTS_SEL_POPUP'
+    EXPORTING
+      iv_organizer_type   = ''
+      is_selection        = is_selection
+    IMPORTING
+      es_selected_request = request_header.
+  p_reqnum = request_header-trkorr.
+  p_memo   = request_header-as4text.
+  LEAVE SCREEN.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_folder.
+  DATA: folder  TYPE string.
+  CALL METHOD cl_gui_frontend_services=>directory_browse
+    CHANGING
+      selected_folder = folder
+    EXCEPTIONS
+      cntl_error      = 1
+      error_no_gui    = 2
+      OTHERS          = 3.
+  p_folder = folder.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  CALL FUNCTION 'WS_FILENAME_GET'
+    EXPORTING
+      def_path         = 'D:\Requests'
+      mask             = ',请求控制文件(K*.*),K*.*,ALL File(*.*),*.*.'
+      mode             = 'O'
+    IMPORTING
+      filename         = p_file
+    EXCEPTIONS
+      inv_winsys       = 1
+      no_batch         = 2
+      selection_cancel = 3
+      selection_error  = 4
+      OTHERS           = 5.
+
+START-OF-SELECTION.
+  PERFORM check_input.
+  CASE 'X'.
+    WHEN p_down.
+      PERFORM downrequest.
+    WHEN p_upld.
+      PERFORM read_req.
+      PERFORM appendrequst.
+      IF p_view = 'X'.
+        PERFORM viewrequest.
+      ELSE.
+        PERFORM import_request.
+      ENDIF.
+    WHEN p_dele.
+      PERFORM delete_file.
+    WHEN p_070l.
+      IF p_reqnum IS INITIAL.
+        MESSAGE s000(oo) WITH '请求号必输'.
+      ELSE.
+        UPDATE e070l SET trkorr = p_reqnum
+          WHERE lastnum = 'TRKORR'.
+        MESSAGE s000(oo) WITH '已更新'.
+      ENDIF.
+  ENDCASE.
+
+*&--------------------------------------------------------------------*
+*&      Form  check_input
+*&--------------------------------------------------------------------*
+FORM check_input.
+  CALL FUNCTION 'TR_AUTHORITY_CHECK_ADMIN'
+    EXPORTING
+      iv_adminfunction = 'TADD'
+    EXCEPTIONS
+      e_no_authority   = 1
+      e_invalid_user   = 2
+      OTHERS           = 3.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE 'E' NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+  IF p_down = 'X'.
+    IF p_reqnum = '' OR p_folder = ''.
+      MESSAGE s000(oo) WITH '必须输入请求号和本机文件夹'.
+      STOP.
+    ENDIF.
+  ELSEIF p_upld = 'X'.
+    IF p_clnt = '' OR p_file = ''.
+      MESSAGE s000(oo) WITH '必须输入文件名和Client'.
+      STOP.
+    ELSE.
+      CALL FUNCTION 'SPLIT_FILENAME'
+        EXPORTING
+          long_filename  = p_file
+        IMPORTING
+          pure_filename  = file_nam
+          pure_extension = file_ext.
+      CONCATENATE file_ext file_nam INTO request.
+    ENDIF.
+  ENDIF.
+ENDFORM.                    "check_input
+
+*&---------------------------------------------------------------------*
+*&      Form  downrequest
+*&---------------------------------------------------------------------*
+FORM downrequest.
+  DATA: lappfile TYPE char200,
+        lguifile TYPE char200.
+
+  length = strlen( p_folder ) - 1.
+  IF p_folder+length CA '/\'.
+    p_folder+length = ''.
+  ENDIF.
+
+  SELECT SINGLE * FROM e070 WHERE trkorr = p_reqnum.
+  IF sy-subrc <> 0.
+    MESSAGE e000(oo) WITH '请求不存在'.
+  ELSEIF e070-trstatus NA 'RN'.
+    MESSAGE e000(oo) WITH '请求未释放'.
+  ENDIF.
+
+  CONCATENATE tran_dir '/data/R ' p_reqnum+4(6) '.' p_reqnum(3) INTO lappfile.
+  CONCATENATE p_folder  '\R' p_reqnum+4(6) '.' p_reqnum(3) INTO lguifile.
+  PERFORM down_file USING lappfile lguifile.
+
+  CONCATENATE tran_dir '/cofiles/K ' p_reqnum+4(6) '.' p_reqnum(3) INTO lappfile.
+  CONCATENATE p_folder  '\K' p_reqnum+4(6) '.' p_reqnum(3) INTO lguifile.
+  PERFORM down_file USING lappfile lguifile.
+  PERFORM append_memo.
+
+  MESSAGE s000(oo) WITH '成功下载到' lguifile.
+ENDFORM.                    " downrequest
+
+*&--------------------------------------------------------------------*
+*&      Form  DOWN_FILE
+*&--------------------------------------------------------------------*
+FORM down_file USING applfile frontfile.
+  DATA: btab TYPE w3mimetabtype WITH HEADER LINE,
+        fstr TYPE string,
+        xstr TYPE xstring,
+        blen TYPE i.
+
+  fstr = frontfile.
+  OPEN DATASET applfile FOR INPUT IN BINARY MODE.
+  IF sy-subrc = 0.
+    READ DATASET applfile INTO xstr LENGTH blen.
+    CLOSE DATASET applfile.
+
+    CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+      EXPORTING
+        buffer        = xstr
+      IMPORTING
+        output_length = blen
+      TABLES
+        binary_tab    = btab.
+
+    CALL FUNCTION 'GUI_DOWNLOAD'
+      EXPORTING
+        bin_filesize      = blen
+        filename          = fstr
+        filetype          = 'BIN'
+        confirm_overwrite = ' '
+      TABLES
+        data_tab          = btab
+      EXCEPTIONS
+        OTHERS            = 22.
+    IF sy-subrc <> 0.
+      MESSAGE e000(oo) WITH '下载文件失败' fstr.
+    ENDIF.
+  ELSE.
+    MESSAGE e000(oo) WITH '读取服务器文件错误' applfile.
+  ENDIF.
+ENDFORM.                               " DOWN_FILE
+
+*&---------------------------------------------------------------------*
+*& 下载请求备注到REQ_LIST.TXT文件
+*&---------------------------------------------------------------------*
+FORM append_memo.
+  DATA: lt_memo TYPE TABLE OF char128 WITH HEADER LINE.
+  DATA: filestr TYPE string.
+
+  CONCATENATE p_folder '\REQ_LIST.TXT' INTO filestr.
+  CONCATENATE p_reqnum cl_abap_char_utilities=>horizontal_tab p_memo INTO lt_memo.
+  APPEND lt_memo.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename              = filestr
+      append                = 'X'
+      filetype              = 'ASC'
+      write_field_separator = 'X'
+      codepage              = '8401'
+    TABLES
+      data_tab              = lt_memo
+    EXCEPTIONS
+      OTHERS                = 22.
+ENDFORM.                    "append_memo
+
+*&--------------------------------------------------------------------*
+*&      Form  read_req
+*&--------------------------------------------------------------------*
+FORM read_req.
+  CALL FUNCTION 'TMS_MGR_READ_TRANSPORT_REQUEST'
+    EXPORTING
+      iv_request                 = request
+      iv_target_system           = system
+    IMPORTING
+      et_request_infos           = gt_infos[]
+    EXCEPTIONS
+      read_config_failed         = 1
+      table_of_requests_is_empty = 2
+      system_not_available       = 3
+      OTHERS                     = 4.
+  READ TABLE gt_infos INDEX 1.
+  IF gt_infos-e070 IS NOT INITIAL.
+    CALL FUNCTION 'POPUP_TO_CONFIRM'
+      EXPORTING
+        titlebar       = '确认'
+        text_question  = '请求文件已存在，是否覆盖？'
+        default_button = '1'
+      IMPORTING
+        answer         = retcode.
+    IF retcode <> '1'.
+      MESSAGE s000(oo) WITH '用户终止'.
+      STOP.
+    ENDIF.
+  ENDIF.
+ENDFORM.                    "read_req
+
+*&---------------------------------------------------------------------*
+*&      Form  UPLOADREQUEST
+*&---------------------------------------------------------------------*
+FORM appendrequst.
+  DATA: lappfile TYPE char200.
+
+  CONCATENATE tran_dir '/cofiles/' file_nam '.' file_ext INTO lappfile.
+  PERFORM up_file USING lappfile p_file.
+
+  length = strlen( p_file ) - 11.
+  p_file+length(1) = 'R'.
+  CONCATENATE tran_dir '/data/R' file_nam+1 '.' file_ext INTO lappfile.
+  PERFORM up_file USING lappfile p_file.
+
+  CALL FUNCTION 'TMS_MGR_FORWARD_TR_REQUEST'
+    EXPORTING
+      iv_request      = request
+      iv_target       = system
+      iv_tardom       = ''
+      iv_tarcli       = ''
+      iv_source       = system
+      iv_srcdom       = ''
+      iv_import_again = 'X'
+      iv_monitor      = 'X'
+      iv_verbose      = ''
+    EXCEPTIONS
+      OTHERS          = 99.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+ENDFORM.                    "appendrequst
+
+*&--------------------------------------------------------------------*
+*&      Form  UP_FILE
+*&--------------------------------------------------------------------*
+FORM up_file USING applfile frontfile.
+  DATA: btab TYPE w3mimetabtype WITH HEADER LINE,
+        fstr TYPE string,
+        xstr TYPE xstring,
+        blen TYPE i.
+
+  fstr = frontfile.
+  CALL FUNCTION 'GUI_UPLOAD'
+    EXPORTING
+      filename   = fstr
+      filetype   = 'BIN'
+    IMPORTING
+      filelength = blen
+    TABLES
+      data_tab   = btab
+    EXCEPTIONS
+      OTHERS     = 17.
+  IF sy-subrc <> 0.
+    MESSAGE e000(oo) WITH '上传文件失败' fstr.
+  ELSE.
+    CALL FUNCTION 'SCMS_BINARY_TO_XSTRING'
+      EXPORTING
+        input_length = blen
+      IMPORTING
+        buffer       = xstr
+      TABLES
+        binary_tab   = btab
+      EXCEPTIONS
+        failed       = 1.
+
+    OPEN DATASET applfile FOR OUTPUT IN BINARY MODE.
+    IF sy-subrc <> 0.
+      MESSAGE e000(oo) WITH '文件写入服务器失败' applfile.
+    ELSE.
+      TRANSFER xstr TO applfile.
+      CLOSE DATASET applfile.
+    ENDIF.
+  ENDIF.
+ENDFORM.                    "UP_FILE
+
+*&--------------------------------------------------------------------*
+*&
+*&--------------------------------------------------------------------*
+FORM import_request.
+  DATA: it_clients TYPE  stms_clients.
+
+  CALL FUNCTION 'TR_AUTHORITY_CHECK_ADMIN'
+    EXPORTING
+      iv_adminfunction = 'IMPS'
+    EXCEPTIONS
+      e_no_authority   = 1
+      e_invalid_user   = 2
+      OTHERS           = 3.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE 'E' NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+  APPEND p_clnt TO it_clients.
+  CALL FUNCTION 'TMS_UI_IMPORT_TR_REQUEST'
+    EXPORTING
+      iv_system             = system
+      iv_request            = request
+      iv_tarcli             = p_clnt
+      iv_some_active        = space
+      it_clients            = it_clients
+    EXCEPTIONS
+      cancelled_by_user     = 1
+      import_request_denied = 2
+      import_request_failed = 3
+      OTHERS                = 4.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE 'E' NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+  CALL FUNCTION 'TMS_UIQ_IMPORT_QUEUE_DISPLAY'
+    EXPORTING
+      iv_system = system
+    EXCEPTIONS
+      OTHERS    = 99.
+
+  IF p_se03 = 'X'.
+    SUBMIT rswbo051
+      WITH trkorr = request
+      AND RETURN.
+  ENDIF.
+ENDFORM.                    "import_request
+
+*&---------------------------------------------------------------------*
+*&      Form  viewrequest
+*&---------------------------------------------------------------------*
+FORM viewrequest.
+  DATA queue TYPE tmscsys.
+
+  SELECT SINGLE * INTO queue
+    FROM tmscsys
+    WHERE sysnam = system.
+  CALL FUNCTION 'TMS_UI_SHOW_TRANSPORT_REQUEST'
+    EXPORTING
+      iv_request                    = request
+      iv_target_system              = ''
+      is_queue                      = queue
+    EXCEPTIONS
+      show_transport_request_failed = 1
+      OTHERS                        = 2.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+    EXPORTING
+      titlebar              = '确认'
+      text_question         = '是否继续传输？'
+      text_button_1         = '传输'
+      text_button_2         = '退出，不传输'
+      icon_button_1         = 'ICON_IMPORT_TRANSPORT_REQUEST'
+      default_button        = '2'
+      display_cancel_button = 'X'
+    IMPORTING
+      answer                = retcode.
+  IF retcode = '1'.
+    PERFORM import_request.
+  ELSE.
+    IF gt_infos-e070 IS INITIAL.
+      CALL FUNCTION 'TMS_MGR_MAINTAIN_TR_QUEUE'
+        EXPORTING
+          iv_command = 'DELFROMBUFFER'
+          iv_system  = system
+          iv_domain  = ''
+          iv_request = request
+          iv_tarcli  = ''
+          iv_monitor = 'X'
+          iv_verbose = ''
+        EXCEPTIONS
+          OTHERS     = 99.
+    ENDIF.
+  ENDIF.
+ENDFORM.                    "viewrequest
+
+*&---------------------------------------------------------------------*
+*& delete_file
+*&---------------------------------------------------------------------*
+FORM delete_file.
+  DATA lappfile TYPE string.
+
+  CONCATENATE tran_dir '/data/R ' p_reqnum+4(6) '.' p_reqnum(3) INTO lappfile.
+  DELETE DATASET lappfile.
+  IF sy-subrc <> 0.
+    MESSAGE s000(oo) WITH '删除数据文件出错'.
+    RETURN.
+  ENDIF.
+
+  CONCATENATE tran_dir '/cofiles/K ' p_reqnum+4(6) '.' p_reqnum(3) INTO lappfile.
+  DELETE DATASET lappfile.
+  IF sy-subrc <> 0.
+    MESSAGE s000(oo) WITH '删除控制文件出错'.
+    RETURN.
+  ENDIF.
+
+  MESSAGE s000(oo) WITH '完成'.
+ENDFORM.
